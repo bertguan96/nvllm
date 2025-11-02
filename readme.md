@@ -6,9 +6,10 @@
 
 - 🔐 **JWT 身份认证** - 基于 JWT 的 API 访问控制
 - 🖥️ **节点管理** - 完整的节点注册、更新、删除和查询功能
-- 📊 **状态监控** - 实时查询节点状态信息
+- 📊 **状态监控** - 实时查询节点状态信息和运行指标（运行任务数、等待任务数、KV缓存等）
 - 🗄️ **Redis 存储** - 使用 Redis 存储节点数据
 - 🌐 **CORS 支持** - 跨域资源共享支持
+- 📝 **请求追踪** - 支持通过 X-Trace-ID 追踪请求
 
 ## 技术栈
 
@@ -29,7 +30,7 @@ nvllm/
 │   └── node.py            # 节点服务逻辑
 ├── model/                 # 数据模型
 │   ├── base.py            # 响应模型
-│   └── node.py            # 节点模型
+│   └── node.py            # 节点模型（包含 Node 和 NodeInfo）
 ├── middleware/            # 中间件
 │   ├── auth.py            # JWT 认证中间件
 │   └── redis_client.py    # Redis 客户端
@@ -152,7 +153,13 @@ Content-Type: application/json
   "node_address": "192.168.1.100",
   "node_port": 8000,
   "node_status": "online",
-  "remark": "GPU节点1"
+  "node_info": {
+    "running": 0,
+    "waiting": 0,
+    "kv_cache": 0
+  },
+  "remark": "GPU节点1",
+  "timeout": 60
 }
 ```
 
@@ -168,13 +175,32 @@ Content-Type: application/json
     "node_address": "192.168.1.100",
     "node_port": 8000,
     "node_status": "online",
+    "node_info": {
+      "running": 0,
+      "waiting": 0,
+      "kv_cache": 0
+    },
     "remark": "GPU节点1",
+    "timeout": 60,
     "create_time": "2024-01-01T00:00:00",
     "update_time": "2024-01-01T00:00:00"
   },
   "trace_id": "xxx"
 }
 ```
+
+**字段说明**:
+- `node_id`: 节点唯一标识符（可选，不提供则自动生成 UUID）
+- `node_type`: 节点类型，如 `master`、`worker`（默认: `master`）
+- `node_address`: 节点 IP 地址（默认: `0.0.0.0`）
+- `node_port`: 节点端口号（默认: `8000`）
+- `node_status`: 节点状态，如 `online`、`offline`（默认: `offline`）
+- `node_info`: 节点运行信息对象
+  - `running`: 正在运行的任务数
+  - `waiting`: 等待中的任务数
+  - `kv_cache`: KV 缓存使用量
+- `remark`: 备注信息（默认: `doc`）
+- `timeout`: 超时时间（秒，默认: `60`）
 
 #### 更新节点
 
@@ -189,9 +215,17 @@ Content-Type: application/json
   "node_address": "192.168.1.100",
   "node_port": 8001,
   "node_status": "online",
-  "remark": "GPU节点1-更新"
+  "node_info": {
+    "running": 2,
+    "waiting": 1,
+    "kv_cache": 1024
+  },
+  "remark": "GPU节点1-更新",
+  "timeout": 120
 }
 ```
+
+**注意**: 所有字段都是可选的，只需提供需要更新的字段即可。
 
 #### 删除节点
 
@@ -209,12 +243,64 @@ GET /api/node/node/get_node/<node_id>
 Authorization: Bearer <token>
 ```
 
+**响应**
+```json
+{
+  "message": "success",
+  "status": "success",
+  "code": 200,
+  "data": {
+    "node_id": "node-001",
+    "node_type": "worker",
+    "node_address": "192.168.1.100",
+    "node_port": 8000,
+    "node_status": "online",
+    "node_info": {
+      "running": 0,
+      "waiting": 0,
+      "kv_cache": 0
+    },
+    "remark": "GPU节点1",
+    "timeout": 60,
+    "create_time": "2024-01-01T00:00:00",
+    "update_time": "2024-01-01T00:00:00"
+  },
+  "trace_id": "xxx"
+}
+```
+
 #### 获取节点状态
 
 **请求**
 ```http
 GET /api/node/node/status/<node_id>
 Authorization: Bearer <token>
+```
+
+**响应**
+```json
+{
+  "message": "success",
+  "status": "success",
+  "code": 200,
+  "data": {
+    "node_id": "node-001",
+    "node_type": "worker",
+    "node_address": "192.168.1.100",
+    "node_port": 8000,
+    "node_status": "online",
+    "node_info": {
+      "running": 2,
+      "waiting": 1,
+      "kv_cache": 1024
+    },
+    "remark": "GPU节点1",
+    "timeout": 60,
+    "create_time": "2024-01-01T00:00:00",
+    "update_time": "2024-01-01T00:00:00"
+  },
+  "trace_id": "xxx"
+}
 ```
 
 #### 获取所有节点
@@ -238,7 +324,13 @@ Authorization: Bearer <token>
       "node_address": "192.168.1.100",
       "node_port": 8000,
       "node_status": "online",
+      "node_info": {
+        "running": 0,
+        "waiting": 0,
+        "kv_cache": 0
+      },
       "remark": "GPU节点1",
+      "timeout": 60,
       "create_time": "2024-01-01T00:00:00",
       "update_time": "2024-01-01T00:00:00"
     }
@@ -276,8 +368,40 @@ Authorization: Bearer <token>
 
 - **api/**: 定义所有 API 端点，处理 HTTP 请求和响应
 - **service/**: 包含业务逻辑，处理节点管理操作
-- **model/**: 数据模型定义，包括响应模型和节点模型
+- **model/**: 数据模型定义
+  - `Response`: 统一响应格式模型
+  - `Node`: 节点模型，包含节点基本信息和运行状态
+  - `NodeInfo`: 节点运行信息模型（运行任务数、等待任务数、KV缓存）
 - **middleware/**: 中间件，包括认证和 Redis 客户端
+
+### 数据模型
+
+#### Node 模型
+
+节点模型包含以下字段：
+
+| 字段 | 类型 | 说明 | 默认值 |
+|------|------|------|--------|
+| node_id | string | 节点唯一标识符 | 自动生成 UUID |
+| node_type | string | 节点类型 | `master` |
+| node_address | string | 节点 IP 地址 | `0.0.0.0` |
+| node_port | int | 节点端口号 | `8000` |
+| node_status | string | 节点状态 | `offline` |
+| node_info | NodeInfo | 节点运行信息 | 空对象 |
+| remark | string | 备注信息 | `doc` |
+| timeout | int | 超时时间（秒） | `60` |
+| create_time | datetime | 创建时间 | 当前时间 |
+| update_time | datetime | 更新时间 | 当前时间 |
+
+#### NodeInfo 模型
+
+节点运行信息模型包含以下字段：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| running | int | 正在运行的任务数 |
+| waiting | int | 等待中的任务数 |
+| kv_cache | int | KV 缓存使用量 |
 
 ### 测试
 
