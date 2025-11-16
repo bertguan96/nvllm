@@ -155,3 +155,19 @@ def get_node_status(node_id: str, trace_id: str) -> Response:
             code=ResponseCode.ERROR, 
             error=str(e),
             trace_id=trace_id)
+        
+        
+def find_node(trace_id: str) -> Node:
+    """
+    查找节点
+    Args:
+        trace_id: Trace ID
+    Returns:
+        Node object if node found, None otherwise
+    """
+    try:
+        node = redis_cli.hget("nodes", trace_id)
+        return Node.from_dict(node)
+    except Exception as e:
+        logger.error(f"Error finding node: {e}")
+        return None 
