@@ -59,6 +59,7 @@ flowchart TB
   subgraph ext["外部"]
     ops["运维 / 注册与查询"]
     infer["推理客户端 OpenAI SDK"]
+    side["vLLM 侧 client\nnvllm_sidecar 上报"]
   end
 
   subgraph gw["nvllm 网关进程（可多副本）"]
@@ -84,6 +85,7 @@ flowchart TB
 
   ops --> api
   infer --> api
+  side --> api
   sn --> reg
   sh --> hc
   sh --> lk
@@ -217,6 +219,41 @@ python main.py
 gunicorn -w 4 -b 0.0.0.0:5000 main:app
 ```
 
+### 说明：节点目录与健康检查
+
+- Redis 中的 **`nodes` 目录不会**因「超时未上报」而自动删除；下线副本需 **调用删除接口** 或由运维清理。
+- **`running` / `waiting` 等负载不会**由网关从 vLLM 自动拉取，需在 **vLLM 侧定期上报**（见下一节侧车脚本）或通过 **`PUT /api/node/node/update/<node_id>`** 自行推送。
+
+## vLLM 侧上报（`client/`）
+
+在每台跑 vLLM 的机器上可用 **`client/nvllm_sidecar.py`** 完成：登录控制面 → 注册节点 → 周期性更新 `node_info`（可选拉取本机 `http://127.0.0.1:8000/metrics` 解析排队指标）。
+
+```bash
+cd client
+pip install -r requirements.txt
+
+export NVLLM_CONTROL_PLANE_URL=http://<网关>:5000
+export NVLLM_NODE_ID=gpu-01
+export NVLLM_NODE_ADDRESS=<对网关可达的 IP>
+export NVLLM_NODE_PORT=8000
+export NVLLM_SERVED_MODEL_NAME=<与客户端 model 一致>
+
+# 可选：从 vLLM Prometheus 文本更新 running/waiting
+export NVLLM_VLLM_METRICS_URL=http://127.0.0.1:8000/metrics
+
+python nvllm_sidecar.py          # 常驻循环上报
+# python nvllm_sidecar.py --once # 单次（适合 cron）
+```
+
+常用环境变量（完整列表见脚本顶部注释）：
+
+| 变量 | 说明 |
+|------|------|
+| `NVLLM_REPORT_INTERVAL_SEC` | 上报周期，默认 `10` |
+| `NVLLM_SKIP_REGISTER` | 设 `1` 则只做更新（节点已注册过） |
+| `NVLLM_NODE_INFO_RUNNING` 等 | 未配置 metrics URL 时的静态兜底 |
+| `NVLLM_TOKEN_REFRESH_SEC` | 重新登录换 JWT，默认 `3300` |
+
 ## API 文档
 
 ### 认证
@@ -294,6 +331,7 @@ Content-Type: application/json
     "node_address": "192.168.1.100",
     "node_port": 8000,
     "node_status": "online",
+    "served_model_name": "meta-llama/Llama-3.1-8B-Instruct",
     "node_info": {
       "running": 0,
       "waiting": 0,
@@ -314,6 +352,7 @@ Content-Type: application/json
 - `node_address`: 节点 IP 地址（默认: `0.0.0.0`）
 - `node_port`: 节点端口号（默认: `8000`）
 - `node_status`: 节点状态，如 `online`、`offline`（默认: `offline`）
+- `served_model_name`: 该副本对应的 OpenAI `model`，与多模型分池一致（可选，默认空为通用池）
 - `node_info`: 节点运行信息对象
   - `running`: 正在运行的任务数
   - `waiting`: 等待中的任务数
@@ -374,6 +413,7 @@ Authorization: Bearer <token>
     "node_address": "192.168.1.100",
     "node_port": 8000,
     "node_status": "online",
+    "served_model_name": "meta-llama/Llama-3.1-8B-Instruct",
     "node_info": {
       "running": 0,
       "waiting": 0,
@@ -408,6 +448,7 @@ Authorization: Bearer <token>
     "node_address": "192.168.1.100",
     "node_port": 8000,
     "node_status": "online",
+    "served_model_name": "meta-llama/Llama-3.1-8B-Instruct",
     "node_info": {
       "running": 2,
       "waiting": 1,
@@ -443,6 +484,7 @@ Authorization: Bearer <token>
       "node_address": "192.168.1.100",
       "node_port": 8000,
       "node_status": "online",
+      "served_model_name": "meta-llama/Llama-3.1-8B-Instruct",
       "node_info": {
         "running": 0,
         "waiting": 0,
@@ -478,6 +520,15 @@ Authorization: Bearer <token>
 
 请求体须包含 OpenAI 字段；**多模型集群**请在节点注册时填写 `served_model_name`，并与请求中的 `model` 一致。
 
+**错误与 HTTP 状态（推理入口）**
+
+| HTTP | 含义 |
+|------|------|
+| 200 | 成功（JSON 或流式） |
+| 4xx | 多来自下游 vLLM（客户端参数等），一般不重试 |
+| 502 | 候选副本全部转发失败，正文含 `error`、`detail` |
+| 503 | 控制面无法选出后端，JSON 含 `error` 与 **`code`**（如 `NO_REGISTRY`、`NO_MODEL_POOL`、`ALL_UNHEALTHY`、`TARGET_NOT_FOUND`、`TARGET_UNHEALTHY`） |
+
 ## 错误响应格式
 
 ```json
@@ -492,6 +543,8 @@ Authorization: Bearer <token>
 
 ## 响应代码说明
 
+### 业务 JSON 中的 `code` 字段（数字）
+
 | 代码 | 说明 |
 |------|------|
 | 200 | 成功 |
@@ -500,6 +553,10 @@ Authorization: Bearer <token>
 | 404 | 资源不存在 |
 | 405 | 方法不允许 |
 | 500 | 服务器错误 |
+
+### 推理网关 HTTP 状态（见上文 `/v1` 小节）
+
+另见 **`502` / `503`** 及响应体中的字符串 **`code`**（选路失败原因枚举）。
 
 ## 开发
 
