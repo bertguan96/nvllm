@@ -43,6 +43,9 @@ nvllm/
 │   ├── auth.py            # JWT 认证中间件
 │   └── redis_client.py    # Redis 客户端
 ├── cache/                 # 缓存模块（预留）
+├── client/                # vLLM 侧上报脚本（独立依赖）
+│   ├── nvllm_sidecar.py   # 登录 / 注册 / 周期更新节点指标
+│   └── requirements.txt
 ├── main.py                # 应用入口（注册路由 + 可选健康心跳线程）
 └── requirements.txt       # 项目依赖
 ```
