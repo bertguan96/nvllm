@@ -1,7 +1,7 @@
 from flask import Blueprint
 from flask import request, jsonify
 from middleware.auth import require_jwt
-from service.node import register_node, update_node, delete_node, get_node_status, get_all_nodes, get_node
+from service import node as node_service
 from model import Response, ResponseMessage, ResponseStatus, ResponseCode, Node
 
 
@@ -13,7 +13,7 @@ def register_node():
     try:
         data = request.json
         trace_id = request.headers.get('X-Trace-ID')
-        response = register_node(Node().from_dict(data), trace_id)
+        response = node_service.register_node(Node.from_dict(data), trace_id)
         return jsonify(response.to_dict())
     except Exception as e:
         return jsonify(
@@ -29,9 +29,10 @@ def register_node():
 @require_jwt
 def update_node(node_id):
     try:
-        data = request.json
+        data = request.json or {}
         trace_id = request.headers.get('X-Trace-ID')
-        response = update_node(data, trace_id)
+        merged = {**data, 'node_id': node_id}
+        response = node_service.update_node(Node.from_dict(merged), trace_id)
         return jsonify(response.to_dict())
     except Exception as e:
         return jsonify(
@@ -47,7 +48,7 @@ def update_node(node_id):
 def delete_node(node_id):
     try:
         trace_id = request.headers.get('X-Trace-ID')
-        response = delete_node(node_id, trace_id)
+        response = node_service.delete_node(node_id, trace_id)
         return jsonify(response.to_dict())
     except Exception as e:
         return jsonify(
@@ -63,7 +64,7 @@ def delete_node(node_id):
 def get_node_status(node_id):
     try:
         trace_id = request.headers.get('X-Trace-ID')
-        response = get_node_status(node_id, trace_id)
+        response = node_service.get_node_status(node_id, trace_id)
         return jsonify(response.to_dict())
     except Exception as e:
         return jsonify(
@@ -79,7 +80,7 @@ def get_node_status(node_id):
 def get_all_nodes():
     try:
         trace_id = request.headers.get('X-Trace-ID')
-        response = get_all_nodes(trace_id)
+        response = node_service.get_all_nodes(trace_id)
         return jsonify(response.to_dict())
     except Exception as e:
         return jsonify(
@@ -94,7 +95,7 @@ def get_all_nodes():
 def get_node(node_id):
     try:
         trace_id = request.headers.get('X-Trace-ID')
-        response = get_node(node_id, trace_id)
+        response = node_service.get_node(node_id, trace_id)
         return jsonify(response.to_dict())
     except Exception as e:
         return jsonify(
